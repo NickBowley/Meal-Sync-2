@@ -1,0 +1,142 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: users
+// Document ID: {userId} (Firebase Auth UID)
+// Fields:
+//   - uid: string (required, immutable, matches auth.uid, size 1..128)
+//   - customerEmail: string (required, valid email, size 3..254)
+//   - familyName: string (required, size 1..100)
+//   - isProMember: bool (required, server-controlled on create/update)
+//   - tier: string (required, in ['free', 'all_access_annual'])
+//   - status: string (required, in ['active', 'trialing', 'cancelled'])
+//   - createdAt: timestamp (required, immutable)
+//   - updatedAt: timestamp (required)
+//
+// Collection: households
+// Document ID: {householdId}
+// Fields:
+//   - ownerUid: string (required, immutable, matches auth.uid, size 1..128)
+//   - familyName: string (required, size 1..100)
+//   - mode: string (required, in ['full_family', 'couples'])
+//   - createdAt: timestamp (required, immutable)
+//   - updatedAt: timestamp (required)
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner(ownerField) {
+      return isAuthenticated() && request.auth.uid == resource.data[ownerField];
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function validStringLength(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+        request.resource.data[field].size() >= minLen &&
+        request.resource.data[field].size() <= maxLen;
+    }
+
+    function isValidEmail(email) {
+      return email is string &&
+        email.size() >= 3 &&
+        email.size() <= 254 &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUserProfile(data) {
+      return hasRequiredFields(['uid', 'customerEmail', 'familyName', 'isProMember', 'tier', 'status', 'createdAt', 'updatedAt']) &&
+        hasOnlyAllowedFields(['uid', 'customerEmail', 'familyName', 'isProMember', 'tier', 'status', 'createdAt', 'updatedAt']) &&
+        validStringLength('uid', 1, 128) &&
+        isValidEmail(data.customerEmail) &&
+        validStringLength('familyName', 1, 100) &&
+        data.isProMember is bool &&
+        data.tier in ['free', 'all_access_annual'] &&
+        data.status in ['active', 'trialing', 'cancelled'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidHousehold(data) {
+      return hasRequiredFields(['ownerUid', 'familyName', 'mode', 'createdAt', 'updatedAt']) &&
+        hasOnlyAllowedFields(['ownerUid', 'familyName', 'mode', 'createdAt', 'updatedAt']) &&
+        validStringLength('ownerUid', 1, 128) &&
+        validStringLength('familyName', 1, 100) &&
+        data.mode in ['full_family', 'couples'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+
+      // Users can create their own profile on the free tier only (prevents privilege escalation)
+      allow create: if isOwner(userId) &&
+        isValidUserProfile(request.resource.data) &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.isProMember == false &&
+        request.resource.data.tier == 'free';
+
+      // Users can update non-privilege fields on their own profile
+      allow update: if isOwner(userId) &&
+        isValidUserProfile(request.resource.data) &&
+        areImmutableFieldsUnchanged(['uid', 'createdAt', 'isProMember', 'tier', 'status']);
+
+      allow delete: if false;
+    }
+
+    match /households/{householdId} {
+      allow read: if isDocOwner('ownerUid');
+
+      allow create: if isAuthenticated() &&
+        isValidHousehold(request.resource.data) &&
+        request.resource.data.ownerUid == request.auth.uid;
+
+      allow update: if isDocOwner('ownerUid') &&
+        isValidHousehold(request.resource.data) &&
+        areImmutableFieldsUnchanged(['ownerUid', 'createdAt']);
+
+      allow delete: if isDocOwner('ownerUid');
+    }
+
+    // Default deny all other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

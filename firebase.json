@@ -1,0 +1,8 @@
+{
+  "firestore": {
+    "databaseId": "ai-studio-mealsync-6105dab4-c255-4a9a-975a-96148150b965",
+    "rules": "firestore.rules",
+    "edition": "ENTERPRISE",
+    "dataAccessMode": "FIRESTORE_NATIVE"
+  }
+}
